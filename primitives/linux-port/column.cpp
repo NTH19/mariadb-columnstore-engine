@@ -54,7 +54,7 @@ using namespace execplan;
 
 namespace
 {
-using MT = uint16_t;
+using MT = simd::MT;
 
 inline uint64_t order_swap(uint64_t x)
 {
@@ -985,6 +985,25 @@ inline uint16_t vectWriteColValues(
     primitives::RIDType* ridDstArray,     // The actual dst arrray ptr to start writing RIDs
     primitives::RIDType* ridSrcArray)     // The actual src array ptr to read RIDs
 {
+#ifdef __ARM_FEATURE_SVE
+  T* tmpDstVecTPtr = reinterpret_cast<T*>(dstArray);
+  uint64_t counts = simdProcessor.stepLength();
+  for (uint32_t it = 0; it < counts; ++it)
+  {
+    typename VT::PredicationType t = simdProcessor.getSinglePredication(it);
+    if (simdProcessor.testAny(t, writeMask))
+    {
+      *tmpDstVecTPtr = dataVecTPtr[it];
+      ++tmpDstVecTPtr;
+    }
+
+    vectUpdateMinMax<T, KIND, HAS_INPUT_RIDS>(validMinMax, simdProcessor.testAny(t, nonNullOrEmptyMask), Min,
+                                              Max,
+                                              dataVecTPtr[it], in);
+  }
+
+  return tmpDstVecTPtr - reinterpret_cast<T*>(dstArray);
+#else
   constexpr const uint16_t FilterMaskStep = VT::FilterMaskStep;
   using SimdType = typename VT::SimdType;
   SimdType tmpStorageVector;
@@ -1012,6 +1031,7 @@ inline uint16_t vectWriteColValues(
   simdProcessor.store(dstArray, tmpStorageVector);
 
   return tmpDstVecTPtr - reinterpret_cast<T*>(&tmpStorageVector);
+#endif
 }
 
 // RIDs no values
@@ -1051,6 +1071,26 @@ inline uint16_t vectWriteColValues(
     primitives::RIDType* ridDstArray,     // The actual dst arrray ptr to start writing RIDs
     primitives::RIDType* ridSrcArray)     // The actual src array ptr to read RIDs
 {
+#ifdef __ARM_FEATURE_SVE
+  T* tmpDstVecTPtr = reinterpret_cast<T*>(dstArray);
+  uint64_t counts = simdProcessor.stepLength();
+  for (uint32_t it = 0; it < counts; ++it)
+  {
+    typename VT::PredicationType t = simdProcessor.getSinglePredication(it);
+    if (simdProcessor.testAny(t, writeMask))
+    {
+      *tmpDstVecTPtr = dataVecTPtr[it];
+      ++tmpDstVecTPtr;
+      vectWriteColValuesLoopRIDAsignment<T, HAS_INPUT_RIDS>(ridDstArray, out, ridOffset + it, ridSrcArray,
+                                                            it);
+      ++ridDstArray;
+    }
+    vectUpdateMinMax<T, KIND, HAS_INPUT_RIDS>(validMinMax, simdProcessor.testAny(t, nonNullOrEmptyMask), Min,
+                                              Max,
+                                              dataVecTPtr[it], in);
+  }
+  return tmpDstVecTPtr - reinterpret_cast<T*> (dstArray);
+#else
   constexpr const uint16_t FilterMaskStep = VT::FilterMaskStep;
   using SimdType = typename VT::SimdType;
   SimdType tmpStorageVector;
@@ -1079,6 +1119,7 @@ inline uint16_t vectWriteColValues(
   simdProcessor.store(dstArray, tmpStorageVector);
 
   return tmpDstVecTPtr - reinterpret_cast<T*>(&tmpStorageVector);
+#endif
 }
 
 // RIDs no values
@@ -1086,7 +1127,7 @@ template <typename T, typename VT, int OUTPUT_TYPE, ENUM_KIND KIND, bool HAS_INP
           typename std::enable_if<!(OUTPUT_TYPE & (OT_TOKEN | OT_DATAVALUE)) && OUTPUT_TYPE & OT_RID,
                                   T>::type* = nullptr>
 inline uint16_t vectWriteRIDValues(
-    VT& processor,                        // SIMD processor
+    VT& simdProcessor,                        // SIMD processor
     const uint16_t valuesWritten,         // The number of values written to in certain SFINAE cases
     const bool validMinMax,               // The flag to update Min/Max for a block or not
     const primitives::RIDType ridOffset,  // The first RID value of the dataVecTPtr
@@ -1099,6 +1140,24 @@ inline uint16_t vectWriteRIDValues(
     MT nonNullOrEmptyMask,                // SIMD intrinsics inverce bitmask for NULL/EMPTY values
     primitives::RIDType* ridSrcArray)     // The actual src array ptr to read RIDs
 {
+#ifdef __ARM_FEATURE_SVE
+  primitives::RIDType* origRIDDstArray = ridDstArray;
+  uint64_t counts = simdProcessor.stepLength();
+  for (uint32_t it = 0; it < counts; ++it)
+  {
+    typename VT::PredicationType t = simdProcessor.getSinglePredication(it);
+    if (simdProcessor.testAny(t, writeMask))
+    {
+      vectWriteColValuesLoopRIDAsignment<T, HAS_INPUT_RIDS>(ridDstArray, out, ridOffset + it, ridSrcArray,
+                                                            it);
+      ++ridDstArray;
+    }
+    vectUpdateMinMax<T, KIND, HAS_INPUT_RIDS>(validMinMax, simdProcessor.testAny(t, nonNullOrEmptyMask), Min,
+                                              Max,
+                                              dataVecTPtr[it], in);
+  }
+  return ridDstArray - origRIDDstArray;
+#else
   constexpr const uint16_t FilterMaskStep = VT::FilterMaskStep;
   primitives::RIDType* origRIDDstArray = ridDstArray;
   // Saving values based on writeMask into tmp vec.
@@ -1117,6 +1176,7 @@ inline uint16_t vectWriteRIDValues(
                                               dataVecTPtr[j], in);
   }
   return ridDstArray - origRIDDstArray;
+#endif
 }
 
 // Both RIDs and values
@@ -1301,14 +1361,202 @@ void vectorizedFiltering(NewColRequestHeader* in, ColResultHeader* out, const T*
                          ParsedColumnFilter* parsedColumnFilter, const bool validMinMax, const T emptyValue,
                          const T nullValue, T Min, T Max, const bool isNullValueMatches)
 {
-  constexpr const uint16_t WIDTH = sizeof(T);
-  using SimdType = typename VT::SimdType;
-  using SimdWrapperType = typename VT::SimdWrapperType;
-  using FilterType = typename VT::FilterType;
-  using UT = typename std::conditional<std::is_unsigned<FilterType>::value || datatypes::is_uint128_t<FilterType>::value || std::is_same<double, FilterType>::value,
-    FilterType, typename datatypes::make_unsigned<FilterType>::type>::type;
   VT simdProcessor;
+  using SimdType = typename VT::SimdType;
+  using FilterType = typename VT::FilterType;
+  using UT = typename std::conditional<std::is_unsigned<FilterType>::value ||
+                                           datatypes::is_uint128_t<FilterType>::value ||
+                                           std::is_same<double, FilterType>::value,
+                                       FilterType, typename datatypes::make_unsigned<FilterType>::type>::type;
   SimdType dataVec;
+  constexpr const uint16_t WIDTH = sizeof(T);
+#ifdef __ARM_FEATURE_SVE
+  [[maybe_unused]] SimdType swapedOrderDataVec;
+  [[maybe_unused]] auto typeHolder = in->colType;
+  MT writeMask, nonEmptyMask, nonNullMask, nonNullOrEmptyMask;
+  MT initFilterMask = simd::MTAllTrue();
+  primitives::RIDType rid = 0;
+  uint16_t totalValuesWritten = 0;
+  char* dstArray = reinterpret_cast<char*>(primitives::getFirstValueArrayPosition(out));
+  primitives::RIDType* ridDstArray = reinterpret_cast<primitives::RIDType*>(getFirstRIDArrayPosition(out));
+  const T* origSrcArray = srcArray;
+  const FT* filterValues = nullptr;
+  const ParsedColumnFilter::CopsType* filterCOPs = nullptr;
+  uint64_t stepLength = simdProcessor.stepLength();
+  // If there are RIDs use its number to get a number of vectorized iterations.
+  uint16_t iterNumber = HAS_INPUT_RIDS ? ridSize : srcSize;
+  simd::PT pg = simdProcessor.getRangePredication(0, iterNumber);
+
+  uint32_t filterCount = 0;
+  // These pragmas are to silence GCC warnings
+  // warning: ignoring attributes on template argument
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wignored-attributes"
+  std::vector<FilterType> filterArgs;
+  auto ptrA = std::mem_fn(&VT::cmpEq);
+  using COPType = decltype(ptrA);
+  std::vector<COPType> copFunctorVec;
+#pragma GCC diagnostic pop
+  MT trueMask = simd::MTAllTrue();
+  using BOPType = decltype(&simd::MTAnd);
+  BOPType bopFunctor;
+  // filter comparators and logical function compilation.
+  if (parsedColumnFilter != nullptr)
+  {
+    filterValues = parsedColumnFilter->getFilterVals<FT>();
+    filterCOPs = parsedColumnFilter->prestored_cops.get();
+    filterCount = parsedColumnFilter->getFilterCount();
+    if (iterNumber > 0)
+    {
+      copFunctorVec.reserve(filterCount);
+      switch (parsedColumnFilter->getBOP())
+      {
+        case BOP_OR:
+          bopFunctor = &simd::MTOr;
+          initFilterMask = simd::MTAllFalse();
+          break;
+        case BOP_AND: bopFunctor = &simd::MTAnd; break;
+        case BOP_XOR:
+          bopFunctor = &simd::MTOr;
+          initFilterMask = simd::MTAllFalse();
+          break;
+        case BOP_NONE:
+          // According with the comments in linux-port/primitiveprocessor.h
+          // there can't be BOP_NONE with filterCount > 0
+          bopFunctor = &simd::MTAnd;
+          break;
+        default: idbassert(false);
+      }
+      filterArgs.reserve(filterCount);
+      for (uint32_t j = 0; j < filterCount; ++j)
+      {
+        // Preload filter argument values only once.
+        if constexpr (KIND == KIND_TEXT)
+        {
+          // Preload filter argument values only once.
+          // First cast filter value as the corresponding unsigned int value
+          UT filterValue = *((UT*)&filterValues[j]);
+          // Cast to ConstString to preprocess the string
+          utils::ConstString s{reinterpret_cast<const char*>(&filterValue), sizeof(UT)};
+          // Strip all 0 bytes on the right, convert byte into collation weights array
+          // and swap bytes order.
+          UT bigEndianFilterWeights = orderSwap(typeHolder.strnxfrm<UT>(s.rtrimZero()));
+          filterArgs.push_back(bigEndianFilterWeights);
+        }
+        else
+        {
+          FilterType filterValue = *((FilterType*)&filterValues[j]);
+          filterArgs.push_back(filterValue);
+        }
+        switch (filterCOPs[j])
+        {
+          case (COMPARE_EQ): copFunctorVec.push_back(std::mem_fn(&VT::cmpEq)); break;
+          case (COMPARE_GE): copFunctorVec.push_back(std::mem_fn(&VT::cmpGe)); break;
+
+          case (COMPARE_GT): copFunctorVec.push_back(std::mem_fn(&VT::cmpGt)); break;
+          case (COMPARE_LE): copFunctorVec.push_back(std::mem_fn(&VT::cmpLe)); break;
+          case (COMPARE_LT): copFunctorVec.push_back(std::mem_fn(&VT::cmpLt)); break;
+          case (COMPARE_NE): copFunctorVec.push_back(std::mem_fn(&VT::cmpNe)); break;
+          case (COMPARE_NIL):
+            copFunctorVec.push_back(std::mem_fn(&VT::cmpAlwaysFalse));
+            break;
+            // There are couple other COP, e.g. COMPARE_NOT however they can't be met here
+            // b/c MCS 6.x uses COMPARE_NOT for strings with OP_LIKE only. See op2num() for
+            // details.
+
+          default: idbassert(false);
+        }
+      }
+    }
+  }
+
+  // main loop
+  // writeMask tells which values must get into the result. Includes values that matches filters. Can have
+  // NULLs. nonEmptyMask tells which vector coords are not EMPTY magics. nonNullMask tells which vector coords
+  // are not NULL magics.
+  for (uint16_t i = 0; i < iterNumber; i += stepLength, pg = simdProcessor.getRangePredication(i, iterNumber))
+  {
+    primitives::RIDType ridOffset = i;
+    assert(!HAS_INPUT_RIDS || (HAS_INPUT_RIDS && ridSize >= ridOffset));
+    if constexpr (HAS_INPUT_RIDS)
+      dataVec = simdProcessor.loadFromIndex(pg, reinterpret_cast<const char*>(origSrcArray), ridArray);
+    else
+      dataVec = simdProcessor.loadFrom(pg, reinterpret_cast<const char*>(srcArray));
+    if constexpr (KIND == KIND_TEXT)
+    {
+      T* ptrDataVec = reinterpret_cast<T*>(&dataVec);
+      T* ptr = reinterpret_cast<T*>(&swapedOrderDataVec);
+      for (uint64_t ct = 0; ct < stepLength; ++ct)
+      {
+        utils::ConstString s{reinterpret_cast<const char*>(&ptrDataVec[ct]), WIDTH};
+        ptr[ct] = orderSwap(typeHolder.strnxfrm<T>(s.rtrimZero()));
+      }
+    }
+
+    nonEmptyMask = simdProcessor.nullEmptyCmpNe(pg, dataVec, emptyValue);
+    writeMask = nonEmptyMask;
+    // NULL check
+    nonNullMask = simdProcessor.nullEmptyCmpNe(pg, dataVec, nullValue);
+    // Exclude NULLs from the resulting set if NULL doesn't match the filters.
+    writeMask = isNullValueMatches ? writeMask : simd::MTAnd(pg, writeMask, nonNullMask);
+    nonNullOrEmptyMask = simd::MTAnd(pg, nonNullMask, nonEmptyMask);
+    // filters
+    MT prevFilterMask = initFilterMask;
+    // TODO name this mask literal
+    MT filterMask = trueMask;
+    for (uint32_t j = 0; j < filterCount; ++j)
+    {
+      // filter using compiled filter and preloaded filter argument
+      if constexpr (KIND == KIND_TEXT)
+        filterMask = copFunctorVec[j](simdProcessor, pg,swapedOrderDataVec, filterArgs[j]);
+      else
+        filterMask = copFunctorVec[j](simdProcessor, pg,dataVec, filterArgs[j]);
+
+      filterMask = bopFunctor(pg,prevFilterMask, filterMask);
+      prevFilterMask = filterMask;
+    }
+    writeMask = simd::MTAnd(pg, writeMask, filterMask);
+
+    T* dataVecTPtr = reinterpret_cast<T*>(&dataVec);
+
+    // vectWriteColValues iterates over the values in the source vec
+    // to store values/RIDs into dstArray/ridDstArray.
+    // It also sets Min/Max values for the block if eligible.
+    // !!! vectWriteColValues increases ridDstArray internally but it doesn't go
+    // outside the scope of the memory allocated to out msg.
+    // vectWriteColValues is empty if outputMode == OT_RID.
+    uint16_t valuesWritten = vectWriteColValues<T, VT, OUTPUT_TYPE, KIND, HAS_INPUT_RIDS>(
+        simdProcessor, writeMask, nonNullOrEmptyMask, validMinMax, ridOffset, dataVecTPtr, dstArray, Min, Max,
+        in, out, ridDstArray, ridArray);
+    // Some outputType modes saves RIDs also. vectWriteRIDValues is empty for
+    // OT_DATAVALUE, OT_BOTH(vectWriteColValues takes care about RIDs).
+    valuesWritten = vectWriteRIDValues<T, VT, OUTPUT_TYPE, KIND, HAS_INPUT_RIDS>(
+        simdProcessor, valuesWritten, validMinMax, ridOffset, dataVecTPtr, ridDstArray, writeMask, Min, Max,
+        in, out, nonNullOrEmptyMask, ridArray);
+
+    // Calculate bytes written
+    uint16_t bytesWritten = valuesWritten * sizeof(T);
+    totalValuesWritten += valuesWritten;
+    ridDstArray += valuesWritten;
+    dstArray += bytesWritten;
+    uint64_t counts = simdProcessor.countElements(pg);
+    rid += counts;
+    srcArray += counts;
+    ridArray += counts;
+  }
+
+  // Set the number of output values here b/c tail processing can skip this operation.
+  out->NVALS = totalValuesWritten;
+
+  // Write captured Min/Max values to *out
+  out->ValidMinMax = validMinMax;
+  if (validMinMax)
+  {
+    out->Min = Min;
+    out->Max = Max;
+  }
+#else
+  using SimdWrapperType = typename VT::SimdWrapperType;
   [[maybe_unused]] SimdType swapedOrderDataVec;
   [[maybe_unused]] auto typeHolder = in->colType;
   SimdType emptyFilterArgVec = simdProcessor.emptyNullLoadValue(emptyValue);
@@ -1501,6 +1749,7 @@ void vectorizedFiltering(NewColRequestHeader* in, ColResultHeader* out, const T*
                                    filterValues, filterRFs, in->colType, origSrcArray, srcSize, origRidArray,
                                    ridSize, processedSoFar, outputType, validMinMax, emptyValue, nullValue,
                                    Min, Max, isNullValueMatches);
+#endif
 }
 
 // This routine dispatches template function calls to reduce branching.
@@ -1513,9 +1762,13 @@ void vectorizedFilteringDispatcher(NewColRequestHeader* in, ColResultHeader* out
                                    const bool isNullValueMatches)
 {
   // Using struct to dispatch SIMD type based on integral type T.
-  using SimdType = typename simd::IntegralToSIMD<STORAGE_TYPE, KIND>::type;
   using FilterType = typename simd::StorageToFiltering<STORAGE_TYPE, KIND>::type;
+#ifndef __ARM_FEATURE_SVE
+  using SimdType = typename simd::IntegralToSIMD<STORAGE_TYPE, KIND>::type;
   using VT = typename simd::SimdFilterProcessor<SimdType, FilterType>;
+#else
+  using VT = typename simd::SimdFilterProcessor<FilterType>;
+#endif
   bool hasInputRIDs = (in->NVALS > 0) ? true : false;
   if (hasInputRIDs)
   {
