@@ -17,9 +17,11 @@
 
 #pragma once
 
-enum ENUM_KIND;
 
 #ifdef __aarch64__
+#ifdef __ARM_FEATURE_SVE
+#include <arm_sve.h>
+#endif
 #include "arm_neon.h"
 #include <cstdint>
 #include <type_traits>
@@ -34,6 +36,333 @@ enum ENUM_KIND;
 
 namespace simd
 {
+#ifdef __ARM_FEATURE_SVE
+using MT = svbool_t;
+using PT = svbool_t;
+MCS_FORCE_INLINE MT MTAllTrue()
+{
+  return svptrue_b8();
+}
+MCS_FORCE_INLINE MT MTAllFalse()
+{
+  return svpfalse();
+}
+MCS_FORCE_INLINE MT MTAnd(PT& pg, MT& x, MT& y)
+{
+  return svand_z(pg, x, y);
+}
+MCS_FORCE_INLINE MT MTOr(PT& pg, MT& x, MT& y)
+{
+  return svorr_z(pg, x, y);
+}
+MCS_FORCE_INLINE MT MTEor(PT& pg, MT& x, MT& y)
+{
+  return sveor_z(pg, x, y);
+}
+template <typename T>
+struct TypeToVecWrapperType;
+template <>
+struct TypeToVecWrapperType<int8_t>
+{
+  using SimdType = svint8_t;
+};
+template <>
+struct TypeToVecWrapperType<uint8_t>
+{
+  using SimdType = svuint8_t;
+};
+template <>
+struct TypeToVecWrapperType<int16_t>
+{
+  using SimdType = svint16_t;
+};
+template <>
+struct TypeToVecWrapperType<uint16_t>
+{
+  using SimdType = svuint16_t;
+};
+template <>
+struct TypeToVecWrapperType<int32_t>
+{
+  using SimdType = svint32_t;
+};
+template <>
+struct TypeToVecWrapperType<uint32_t>
+{
+  using SimdType = svuint32_t;
+};
+template <>
+struct TypeToVecWrapperType<int64_t>
+{
+  using SimdType = svint64_t;
+};
+template <>
+struct TypeToVecWrapperType<uint64_t>
+{
+  using SimdType = svuint64_t;
+};
+template <>
+struct TypeToVecWrapperType<float>
+{
+  using SimdType = svfloat32_t;
+};
+template <>
+struct TypeToVecWrapperType<double>
+{
+  using SimdType = svfloat64_t;
+};
+template <typename T, ENUM_KIND KIND, typename ENABLE = void>
+struct StorageToFiltering;
+template <typename T, ENUM_KIND KIND>
+struct StorageToFiltering<T, KIND,
+                          typename std::enable_if<KIND == KIND_FLOAT && sizeof(double) == sizeof(T)>::type>
+{
+  using type = double;
+};
+
+template <typename T, ENUM_KIND KIND>
+struct StorageToFiltering<T, KIND,
+                          typename std::enable_if<KIND == KIND_FLOAT && sizeof(float) == sizeof(T)>::type>
+{
+  using type = float;
+};
+
+template <typename T, ENUM_KIND KIND>
+struct StorageToFiltering<T, KIND, typename std::enable_if<KIND != KIND_FLOAT>::type>
+{
+  using type = T;
+};
+template <typename T>
+class SimdFilterProcessor
+{
+ public:
+  using PredicationType = svbool_t;
+  using SimdType = typename TypeToVecWrapperType<T>::SimdType;
+  using FilterType = T;
+  MCS_FORCE_INLINE PredicationType getSinglePredication(uint64_t i)
+  {
+    PredicationType op1 = getRangePredication(0, i);
+    PredicationType op2 = getRangePredication(0, i + 1);
+    return MTEor(op2, op1, op2);
+  }
+  MCS_FORCE_INLINE PredicationType getRangePredication(uint64_t from, uint64_t to)
+  {
+    if constexpr (sizeof(T) == 1)
+      return svwhilelt_b8(from, to);
+    else if constexpr (sizeof(T) == 2)
+      return svwhilelt_b16(from, to);
+    else if constexpr (sizeof(T) == 4)
+      return svwhilelt_b32(from, to);
+    else if constexpr (sizeof(T) == 8)
+      return svwhilelt_b64(from, to);
+  }
+  MCS_FORCE_INLINE uint64_t stepLength()
+  {
+    if constexpr (sizeof(T) == 1)
+      return svcntb();
+    else if constexpr (sizeof(T) == 2)
+      return svcnth();
+    else if constexpr (sizeof(T) == 4)
+      return svcntw();
+    else if constexpr (sizeof(T) == 8)
+      return svcntd();
+  }
+  MCS_FORCE_INLINE SimdType loadValue(PredicationType& pg, const T fill)
+  {
+    if constexpr (is_same_v<T, int8_t>)
+      return svdup_s8_x(pg, fill);
+    else if constexpr (is_same_v<T, uint8_t>)
+      return svdup_u8_x(pg, fill);
+    else if constexpr (is_same_v<T, int16_t>)
+      return svdup_s16_x(pg, fill);
+    else if constexpr (is_same_v<T, uint16_t>)
+      return svdup_u16_x(pg, fill);
+    else if constexpr (is_same_v<T, int32_t>)
+      return svdup_s32_x(pg, fill);
+    else if constexpr (is_same_v<T, uint32_t>)
+      return svdup_u32_x(pg, fill);
+    else if constexpr (is_same_v<T, int64_t>)
+      return svdup_s64_x(pg, fill);
+    else if constexpr (is_same_v<T, uint64_t>)
+      return svdup_u64_x(pg, fill);
+    else if constexpr (is_same_v<T, float>)
+      return svdup_f32_x(pg, fill);
+    else if constexpr (is_same_v<T, double>)
+      return svdup_f64_x(pg, fill);
+  }
+  MCS_FORCE_INLINE SimdType loadFrom(PredicationType& pg, const char* from)
+  {
+    return svld1(pg, reinterpret_cast<const T*>(from));
+  }
+  MCS_FORCE_INLINE SimdType loadFromIndex(PredicationType& pg, const char* base, const uint16_t* index)
+  {
+    SimdType value;
+    uint64_t n = stepLength();
+    for (uint64_t i = 0; i < n; ++i)
+      *((T*)&value + i) = reinterpret_cast<const T*>(base)[index[i]];
+    return value;
+  }
+  MCS_FORCE_INLINE MT cmpEq(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svcmpeq(pg, x, y);
+  }
+  MCS_FORCE_INLINE MT nullEmptyCmpNe(PredicationType& pg, SimdType& x, T y)
+  {
+    if constexpr (std::is_same_v<T, float>)
+    {
+      return svcmpne(pg, svreinterpret_s32(x),static_cast<int32_t>( y));
+    }
+    else if constexpr (std::is_same_v<T, double>)
+    {
+      return svcmpne(pg, svreinterpret_s64(x),static_cast<int64_t>( y));
+    }
+    return cmpNe(pg, x, y);
+  }
+  MCS_FORCE_INLINE MT cmpNe(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svcmpne(pg, x, y);
+  }
+  MCS_FORCE_INLINE MT cmpGt(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svcmpgt(pg, x, y);
+  }
+  MCS_FORCE_INLINE MT cmpGe(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svcmpge(pg, x, y);
+  }
+  MCS_FORCE_INLINE MT cmpLe(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svcmple(pg, x, y);
+  }
+  MCS_FORCE_INLINE MT cmpLt(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svcmplt(pg, x, y);
+  }
+  MCS_FORCE_INLINE MT cmple(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svcmple(pg, x, y);
+  }
+  MCS_FORCE_INLINE MT cmpAlwaysFalse(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svpfalse();
+  }
+  MCS_FORCE_INLINE MT cmpAlwaysTrue(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE bool testAny(const PredicationType& pg, const PredicationType& op)
+  {
+    return svptest_any(pg, op);
+  }
+  MCS_FORCE_INLINE void store(PredicationType& pg, char* dst, SimdType& x)
+  {
+    svst1(pg, reinterpret_cast<T*>(dst), x);
+  }
+  MCS_FORCE_INLINE uint64_t countElements(PredicationType& pg)
+  {
+    if constexpr (sizeof(T) == 1)
+      return svcntp_b8(pg, pg);
+    else if constexpr (sizeof(T) == 2)
+      return svcntp_b16(pg, pg);
+    else if constexpr (sizeof(T) == 4)
+      return svcntp_b32(pg, pg);
+    else if constexpr (sizeof(T) == 8)
+      return svcntp_b64(pg, pg);
+  }
+};
+
+template <>
+class SimdFilterProcessor<__int128>
+{
+ public:
+  using T=int64_t;
+  using PredicationType = svbool_t;
+  using SimdType = svint64_t;
+  using FilterType = int64_t;
+  MCS_FORCE_INLINE PredicationType getSinglePredication(uint64_t i)
+  {
+    PredicationType op1 = getRangePredication(0, i);
+    PredicationType op2 = getRangePredication(0, i + 1);
+    return MTEor(op2, op1, op2);
+  }
+  MCS_FORCE_INLINE PredicationType getRangePredication(uint64_t from, uint64_t to)
+  {
+      return svwhilelt_b64(from, to);
+  }
+  MCS_FORCE_INLINE uint64_t stepLength()
+  {
+      return svcntd();
+  }
+  MCS_FORCE_INLINE SimdType loadValue(PredicationType& pg, const int64_t fill)
+  {
+      return svdup_s64_x(pg, fill);
+  }
+  MCS_FORCE_INLINE SimdType loadFrom(PredicationType& pg, const char* from)
+  {
+    return svld1(pg, reinterpret_cast<const T*>(from));
+  }
+  MCS_FORCE_INLINE SimdType loadFromIndex(PredicationType& pg, const char* base, const uint16_t* index)
+  {
+    SimdType value;
+    uint64_t n = stepLength();
+    for (uint64_t i = 0; i < n; ++i)
+      *((T*)&value + i) = reinterpret_cast<const T*>(base)[index[i]];
+    return value;
+  }
+  MCS_FORCE_INLINE MT cmpEq(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE MT nullEmptyCmpNe(PredicationType& pg, SimdType& x, T y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE MT cmpNe(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE MT cmpGt(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE MT cmpGe(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE MT cmpLe(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE MT cmpLt(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE MT cmple(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE MT cmpAlwaysFalse(PredicationType& pg, SimdType& x, T& y)
+  {
+    return svpfalse();
+  }
+  MCS_FORCE_INLINE MT cmpAlwaysTrue(PredicationType& pg, SimdType& x, T& y)
+  {
+    return pg;
+  }
+  MCS_FORCE_INLINE bool testAny(const PredicationType& pg, const PredicationType& op)
+  {
+    return svptest_any(pg, op);
+  }
+  MCS_FORCE_INLINE void store(PredicationType& pg, char* dst, SimdType& x)
+  {
+    svst1(pg, reinterpret_cast<T*>(dst), x);
+  }
+  MCS_FORCE_INLINE uint64_t countElements(PredicationType& pg)
+  {
+      return svcntp_b64(pg, pg);
+  }
+};
+#else
 // the type is decided by the basic type
 using vi1_t =int8x16_t;
 using vi2_t =int16x8_t;
@@ -1492,7 +1821,7 @@ class SimdFilterProcessor<
     vst1q_u8(reinterpret_cast<uint8_t*>(dst), x);
   }
 };
-
+#endif
 };      // namespace simd
 
 #endif
