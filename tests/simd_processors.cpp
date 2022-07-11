@@ -67,7 +67,7 @@ TYPED_TEST(SimdProcessorTypedTest, SimdFilterProcessor_simd128)
 }
 #endif
 #ifdef __aarch64__
-
+#ifndef __ARM_FEATURE_SVE
 using namespace std;
 
 template <typename T>
@@ -429,4 +429,5 @@ TEST(SimdProcessorTest, Float32)
   EXPECT_EQ(proc.cmpLt(lhs, rhs), expect);
   EXPECT_EQ(proc.cmpGe(lhs, rhs), (simd::MT)~expect);
 }
+#endif
 #endif
