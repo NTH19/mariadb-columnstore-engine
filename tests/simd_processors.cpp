@@ -15,7 +15,6 @@
    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
    MA 02110-1301, USA. */
 
-
 #include <cstdint>
 #include <iostream>
 #include <type_traits>
@@ -25,36 +24,36 @@
 #include "simd_sse.h"
 #include "simd_arm.h"
 #if defined(__x86_64__)
-  #define TESTS_USING_SSE 1
-  using float64_t = double;
-  using float32_t = float;
+#define TESTS_USING_SSE 1
+using float64_t = double;
+using float32_t = float;
 #endif
 #ifdef __aarch64__
-  #define TESTS_USING_ARM 1
+#define TESTS_USING_ARM 1
 #endif
 
 using namespace std;
 
 template <typename T>
-class SimdProcessorTypedTest : public testing::Test {
-public:
+class SimdProcessorTypedTest : public testing::Test
+{
+ public:
   using IntegralType = T;
-  #if TESTS_USING_SSE
-    using SimdType = std::conditional_t<std::is_same<T, float>::value,
-                                        simd::vi128f_wr,
-                                        std::conditional_t<std::is_same<T, double>::value,
-                                                           simd::vi128d_wr,
-                                                           simd::vi128_wr>>;
-    using Proc = typename simd::SimdFilterProcessor<SimdType, T>;
-    #else
-    using Proc = typename simd::SimdFilterProcessor<typename simd::TypeToVecWrapperType<T>::WrapperType, T>;
-  #endif
+#if TESTS_USING_SSE
+  using SimdType =
+      std::conditional_t<std::is_same<T, float>::value, simd::vi128f_wr,
+                         std::conditional_t<std::is_same<T, double>::value, simd::vi128d_wr, simd::vi128_wr>>;
+  using Proc = typename simd::SimdFilterProcessor<SimdType, T>;
+#else
+  using Proc = typename simd::SimdFilterProcessor<typename simd::TypeToVecWrapperType<T>::WrapperType, T>;
+#endif
   void SetUp() override
   {
   }
 };
 
-using SimdProcessor128TypedTestTypes = ::testing::Types<uint64_t, uint32_t, uint16_t, uint8_t, int64_t, int32_t, int16_t, int8_t>;
+using SimdProcessor128TypedTestTypes =
+    ::testing::Types<uint64_t, uint32_t, uint16_t, uint8_t, int64_t, int32_t, int16_t, int8_t>;
 TYPED_TEST_SUITE(SimdProcessorTypedTest, SimdProcessor128TypedTestTypes);
 
 TYPED_TEST(SimdProcessorTypedTest, SimdFilterProcessor_simd128)
@@ -94,57 +93,17 @@ TYPED_TEST(SimdProcessorTypedTest, SimdFilterProcessor_simd128)
   EXPECT_EQ(proc.cmpNe(rhs, lhs), allFalse);
 }
 
-
 TEST(SimdProcessorTest, Int8)
 {
-    using Proc = typename SimdProcessorTypedTest<int8_t>::Proc;
-    using SimdType = typename Proc::SimdType;
-    Proc proc;
-    constexpr static simd::MT allTrue = 0xFFFF;
-    simd::MT expect = 0x0;
-    int8_t l[16]{0, 1, 2, 5, 4, 3, 8, 5, 6, 10, 58, 2, 32, 41, 2, 5};
-    int8_t r[16]{0, 1, 8, 35, 24, 13, 8, 25, 16, 10, 58, 2, 32, 41, 2, 5};
-    int8_t minlr[16]{0, 1, 2, 5, 4, 3, 8, 5, 6, 10, 58, 2, 32, 41, 2, 5};
-    int8_t maxlr[16]{0, 1, 8, 35, 24, 13, 8, 25, 16, 10, 58, 2, 32, 41, 2, 5};
-    SimdType lhs = proc.loadFrom(reinterpret_cast<char*>(l));
-    SimdType rhs = proc.loadFrom(reinterpret_cast<char*>(r));
-    SimdType min = proc.loadFrom(reinterpret_cast<char*>(minlr));
-    SimdType max = proc.loadFrom(reinterpret_cast<char*>(maxlr));
-    for (int i = 0; i < 16; i++)
-      if (l[i] > r[i])
-        expect |= 1 << i;
-    EXPECT_EQ(proc.cmpGt(lhs, rhs), expect);
-    EXPECT_EQ(proc.cmpLe(lhs, rhs),(simd::MT) ~expect);
-    SimdType testmax = proc.max(lhs, rhs);
-    SimdType testmin = proc.min(lhs, rhs);
-    EXPECT_EQ(proc.cmpEq(testmax, max), allTrue);
-    EXPECT_EQ(proc.cmpEq(testmin, min), allTrue);
-
-    expect = 0x0;
-    for (int i = 0; i < 16; i++)
-      if (l[i] == r[i])
-        expect |= 1 << i;
-    EXPECT_EQ(proc.cmpEq(lhs, rhs), expect);
-    EXPECT_EQ(proc.cmpNe(lhs, rhs), (simd::MT)~expect);
-
-    expect = 0x0;
-    for (int i = 0; i < 16; i++)
-      if (l[i] < r[i])
-        expect |= 1 << i;
-    EXPECT_EQ(proc.cmpLt(lhs, rhs), expect);
-    EXPECT_EQ(proc.cmpGe(lhs, rhs), (simd::MT)~expect);
-}
-TEST(SimdProcessorTest, Uint8)
-{
-  using Proc = typename SimdProcessorTypedTest<uint8_t>::Proc;
+  using Proc = typename SimdProcessorTypedTest<int8_t>::Proc;
   using SimdType = typename Proc::SimdType;
   Proc proc;
   constexpr static simd::MT allTrue = 0xFFFF;
   simd::MT expect = 0x0;
-  uint8_t l[16]{0, 1, 2, 5, 4, 3, 8, 5, 6, 10, 5, 2, 32, 41, 2, 5};
-  uint8_t r[16]{0, 1, 8, 35, 24, 13, 8, 25, 16, 10, 58, 2, 32, 41, 2, 5};
-  uint8_t minlr[16]{0, 1, 2, 5, 4, 3, 8, 5, 6, 10, 5, 2, 32, 41, 2, 5};
-  uint8_t maxlr[16]{0, 1, 8, 35, 24, 13, 8, 25, 16, 10, 58, 2, 32, 41, 2, 5};
+  int8_t l[16]{0, 1, 2, 5, 4, 3, 8, 5, 6, 10, 58, 2, 32, 41, 2, 5};
+  int8_t r[16]{0, 1, 8, 35, 24, 13, 8, 25, 16, 10, 58, 2, 32, 41, 2, 5};
+  int8_t minlr[16]{0, 1, 2, 5, 4, 3, 8, 5, 6, 10, 58, 2, 32, 41, 2, 5};
+  int8_t maxlr[16]{0, 1, 8, 35, 24, 13, 8, 25, 16, 10, 58, 2, 32, 41, 2, 5};
   SimdType lhs = proc.loadFrom(reinterpret_cast<char*>(l));
   SimdType rhs = proc.loadFrom(reinterpret_cast<char*>(r));
   SimdType min = proc.loadFrom(reinterpret_cast<char*>(minlr));
@@ -153,7 +112,7 @@ TEST(SimdProcessorTest, Uint8)
     if (l[i] > r[i])
       expect |= 1 << i;
   EXPECT_EQ(proc.cmpGt(lhs, rhs), expect);
-  EXPECT_EQ(proc.cmpLe(lhs, rhs),(simd::MT) ~expect);
+  EXPECT_EQ(proc.cmpLe(lhs, rhs), (simd::MT)~expect);
   SimdType testmax = proc.max(lhs, rhs);
   SimdType testmin = proc.min(lhs, rhs);
   EXPECT_EQ(proc.cmpEq(testmax, max), allTrue);
@@ -164,14 +123,59 @@ TEST(SimdProcessorTest, Uint8)
     if (l[i] == r[i])
       expect |= 1 << i;
   EXPECT_EQ(proc.cmpEq(lhs, rhs), expect);
-  EXPECT_EQ(proc.cmpNe(lhs, rhs),(simd::MT) ~expect);
+  EXPECT_EQ(proc.cmpNe(lhs, rhs), (simd::MT)~expect);
 
   expect = 0x0;
   for (int i = 0; i < 16; i++)
     if (l[i] < r[i])
       expect |= 1 << i;
   EXPECT_EQ(proc.cmpLt(lhs, rhs), expect);
-  EXPECT_EQ(proc.cmpGe(lhs, rhs),(simd::MT) ~expect);
+  EXPECT_EQ(proc.cmpGe(lhs, rhs), (simd::MT)~expect);
+}
+TEST(SimdProcessorTest, Uint8)
+{
+  using Proc = typename SimdProcessorTypedTest<uint8_t>::Proc;
+  using SimdType = typename Proc::SimdType;
+  Proc proc;
+  constexpr static simd::MT allTrue = 0xFFFF;
+  simd::MT expect = 0x0;
+  uint8_t l[16]{0, 1, 2, 5, 4, 3, 8, 5, 6, 10, 5, 2, 32, 41, 2, 5};
+  uint8_t r[16]{0, 1, 8, 35, 24, 13, 8, 25, 16, 10, 58, 2, 32, 41, 2, 5};
+  uint8_t sublr[16]{0,0,-6,-30,-20,-10,0,-20,-10,0,-53,0,0,0,0,0};
+  uint8_t minlr[16]{0, 1, 2, 5, 4, 3, 8, 5, 6, 10, 5, 2, 32, 41, 2, 5};
+  uint8_t maxlr[16]{0, 1, 8, 35, 24, 13, 8, 25, 16, 10, 58, 2, 32, 41, 2, 5};
+  SimdType lhs = proc.loadFrom(reinterpret_cast<char*>(l));
+  SimdType rhs = proc.loadFrom(reinterpret_cast<char*>(r));
+  SimdType min = proc.loadFrom(reinterpret_cast<char*>(minlr));
+  SimdType max = proc.loadFrom(reinterpret_cast<char*>(maxlr));
+  SimdType subRes = proc.loadFrom(reinterpret_cast<char*>(sublr));
+  for (int i = 0; i < 16; i++)
+    if (l[i] > r[i])
+      expect |= 1 << i;
+  EXPECT_EQ(proc.cmpGt(lhs, rhs), expect);
+  EXPECT_EQ(proc.cmpLe(lhs, rhs), (simd::MT)~expect);
+  SimdType testmax = proc.max(lhs, rhs);
+  SimdType testmin = proc.min(lhs, rhs);
+  EXPECT_EQ(proc.cmpEq(testmax, max), allTrue);
+  EXPECT_EQ(proc.cmpEq(testmin, min), allTrue);
+
+  expect = 0x0;
+  for (int i = 0; i < 16; i++)
+    if (l[i] == r[i])
+      expect |= 1 << i;
+  EXPECT_EQ(proc.cmpEq(lhs, rhs), expect);
+  EXPECT_EQ(proc.cmpNe(lhs, rhs), (simd::MT)~expect);
+
+  expect = 0x0;
+  for (int i = 0; i < 16; i++)
+    if (l[i] < r[i])
+      expect |= 1 << i;
+  EXPECT_EQ(proc.cmpLt(lhs, rhs), expect);
+  EXPECT_EQ(proc.cmpGe(lhs, rhs), (simd::MT)~expect);
+
+  EXPECT_EQ(proc.maxScalar(lhs), 41);
+  EXPECT_EQ(proc.maxScalar(rhs), 58);
+  EXPECT_EQ(proc.cmpEq(proc.sub(lhs,rhs),subRes), allTrue);
 }
 
 TEST(SimdProcessorTest, Int16)
@@ -230,7 +234,7 @@ TEST(SimdProcessorTest, Uint16)
   SimdType max = proc.loadFrom(reinterpret_cast<char*>(maxlr));
   for (int i = 0; i < 8; i++)
     if (l[i] > r[i])
-      expect |= 3 << i*2;
+      expect |= 3 << i * 2;
   EXPECT_EQ(proc.cmpGt(lhs, rhs), expect);
   EXPECT_EQ(proc.cmpLe(lhs, rhs), (simd::MT)~expect);
   SimdType testmax = proc.max(lhs, rhs);
@@ -261,7 +265,7 @@ TEST(SimdProcessorTest, Int32)
   constexpr static simd::MT allTrue = 0xFFFF;
   simd::MT expect = 0x0;
   int32_t l[8]{0, 1, 2, -5};
-  int32_t r[8]{0, 105, -8,54333};
+  int32_t r[8]{0, 105, -8, 54333};
   int32_t minlr[8]{0, 1, -8, -5};
   int32_t maxlr[8]{0, 105, 2, 54333};
   SimdType lhs = proc.loadFrom(reinterpret_cast<char*>(l));
@@ -455,8 +459,8 @@ TEST(SimdProcessorTest, Float32)
   Proc proc;
   constexpr static simd::MT allTrue = 0xFFFF;
   simd::MT expect = 0x0;
-  float32_t l[4]{82, 102,-5.6,9.5};
-  float32_t r[4]{2.0, 1,-5.7,6};
+  float32_t l[4]{82, 102, -5.6, 9.5};
+  float32_t r[4]{2.0, 1, -5.7, 6};
   float32_t minlr[8]{2.0, 1, -5.7, 6};
   float32_t maxlr[8]{82, 102, -5.6, 9.5};
   SimdType lhs = proc.loadFrom(reinterpret_cast<char*>(l));

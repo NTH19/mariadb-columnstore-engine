@@ -1,15 +1,12 @@
 /* Copyright (C) 2021-2022 Mariadb Corporation.
-
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License
    as published by the Free Software Foundation; version 2 of
    the License.
-
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
@@ -212,7 +209,7 @@ struct TypeToVecWrapperType<T, typename std::enable_if<std::is_unsigned_v<T> >::
 
 template <typename T>
     struct TypeToVecWrapperType<
-        T, typename std::enable_if<std::is_signed_v<T> &&!is_floating_point_v<T>>::type> 
+        T, typename std::enable_if<std::is_signed_v<T> &&!std::is_floating_point_v<T>>::type> 
     : WidthToSVecWrapperType<sizeof(T)>
 {
 };
@@ -238,7 +235,7 @@ struct IntegralToSIMD<T, KIND,
 template <typename T, ENUM_KIND KIND>
 struct IntegralToSIMD<T, KIND, typename std::enable_if<KIND != KIND_FLOAT>::type>
 {
-  using type = TypeToVecWrapperType<T>::WrapperType;
+  using type = typename TypeToVecWrapperType<T>::WrapperType;
 };
 
 template <typename T, ENUM_KIND KIND, typename ENABLE = void>
@@ -1794,7 +1791,10 @@ class SimdFilterProcessor<
   {
     arm_neon_mm_maskmoveu_si128((ArmNeonSSEVecType)x, (ArmNeonSSEVecType)vmask, dst);
   }
-
+  MCS_FORCE_INLINE SimdType sub(SimdType x,SimdType y)
+  {
+    return vsubq_u8(x,y);
+  }
   MCS_FORCE_INLINE void store(char* dst, SimdType x)
   {
     vst1q_u8(reinterpret_cast<uint8_t*>(dst), x);
