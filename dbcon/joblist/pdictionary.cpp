@@ -119,7 +119,7 @@ void pDictionaryStep::addFilter(int8_t COP, const string& value)
   fFilterString.append((const uint8_t*)value.c_str(), value.size());
   fFilterCount++;
 
-  if (fFilterCount == 1 && (COP == COMPARE_EQ || COP == COMPARE_NE))
+  if (fFilterCount > eqFilterThreshold && (COP == COMPARE_EQ || COP == COMPARE_NE))
   {
     hasEqualityFilter = true;
     tmpCOP = COP;

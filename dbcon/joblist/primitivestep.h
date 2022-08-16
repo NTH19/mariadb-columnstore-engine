@@ -663,6 +663,7 @@ class pDictionaryStep : public JobStep
   std::vector<const execplan::Filter*> fFilters;
 
   bool hasEqualityFilter;
+  constexpr int eqFilterThreshold=6;
   int8_t tmpCOP;
   std::vector<std::string> eqFilter;
 
