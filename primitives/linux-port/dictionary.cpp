@@ -32,6 +32,7 @@ using namespace std;
 #include "exceptclasses.h"
 #include "dataconvert.h"
 #include "string_prefixes.h"
+#include "branchpred.h"
 #include <sstream>
 
 using namespace logging;
@@ -46,25 +47,38 @@ const char* signatureNotFound = joblist::CPSTRNOTFOUND.c_str();
 
 namespace primitives
 {
+inline bool weightCompare(uint8_t COP,uint64_t l,uint64_t r)
+{
+  switch (COP)
+  {
+    case COMPARE_NIL: return false;
+    case COMPARE_LE: 
+    case COMPARE_LT: return l<r;
+    case COMPARE_GE: 
+    case COMPARE_GT: return l>r;
+    case COMPARE_NE: return true;
+    default: return false;
+  }
+}
 inline bool PrimitiveProcessor::compare(const datatypes::Charset& cs, uint8_t COP, const char* str1,
                                         size_t length1, const char* str2, size_t length2) throw()
 {
-  int error = 0;
-  bool rc = primitives::StringComparator(cs).op(&error, COP, ConstString(str1, length1),
-                                                ConstString(str2, length2));
-  if (error)
-  {
-    MessageLog logger(LoggingID(28));
-    logging::Message::Args colWidth;
-    Message msg(34);
+    int error = 0;
+    bool rc = primitives::StringComparator(cs).op(&error, COP, ConstString(str1, length1),
+                                             ConstString(str2, length2));
+    if (error)
+    {
+      MessageLog logger(LoggingID(28));
+      logging::Message::Args colWidth;
+      Message msg(34);
 
-    colWidth.add(COP);
-    colWidth.add("compare");
-    msg.format(colWidth);
-    logger.logErrorMessage(msg);
-    return false;  // throw an exception here?
-  }
-  return rc;
+      colWidth.add(COP);
+      colWidth.add("compare");
+      msg.format(colWidth);
+      logger.logErrorMessage(msg);
+      return false;  // throw an exception here?
+    }
+    return rc;
 }
 
 /*
@@ -405,7 +419,7 @@ void PrimitiveProcessor::p_Dictionary(const DictInput* in, vector<uint8_t>* out,
   const uint8_t* in8;
   DataValue* outValue;
   p_DataValue min = {0, NULL}, max = {0, NULL}, sigptr = {0, NULL};
-  int tmp, filterIndex, filterOffset;
+  int  filterIndex, filterOffset;
   uint16_t aggCount;
   bool cmpResult;
   DictOutput header;
@@ -432,12 +446,27 @@ void PrimitiveProcessor::p_Dictionary(const DictInput* in, vector<uint8_t>* out,
   aggCount = 0;
   min.len = 0;
   max.len = 0;
+  uint64_t maxByte = 0, minByte = 0xFFFFFFFFFFFFFFFF;
 
   //...Initialize I/O counts
   header.CacheIO = 0;
   header.PhysicalIO = 0;
+  uint64_t v=0;
 
   header.NBYTES = sizeof(DictOutput);
+
+  vector<tuple<uint64_t,uint8_t,const char*,size_t>> filterInfo(in->NOPS);
+  if (in->InputFlags == 1)
+    filterOffset = sizeof(DictInput) + (in->NVALS * sizeof(OldGetSigParams));
+  else
+    filterOffset = sizeof(DictInput) + (in->NVALS * sizeof(PrimToken));
+  for (filterIndex = 0; filterIndex < in->NOPS; filterIndex++)
+  {
+    filter = reinterpret_cast<const DictFilterElement*>(&in8[filterOffset]);
+    uint64_t weight = encodeStringPrefix_check_null((const uint8_t*)filter->data, filter->len, charsetNumber);
+    filterInfo[filterIndex] = make_tuple(weight, filter->COP, (const char*)filter->data, filter->len);
+    filterOffset += sizeof(DictFilterElement) + filter->len;
+  }
 
   for (nextSig(in->NVALS, in->tokens, &sigptr, in->OutputType, (in->InputFlags ? true : false), skipNulls);
        sigptr.len != -1;
@@ -446,7 +475,7 @@ void PrimitiveProcessor::p_Dictionary(const DictInput* in, vector<uint8_t>* out,
 #if defined(XXX_PRIMITIVES_TOKEN_RANGES_XXX)
     if (minMax)
     {
-      uint64_t v = encodeStringPrefix_check_null(sigptr.data, sigptr.len, charsetNumber);
+      v = encodeStringPrefix_check_null(sigptr.data, sigptr.len, charsetNumber);
       minMax[1] = minMax[1] < v ? v : minMax[1];
       minMax[0] = minMax[0] > v ? v : minMax[0];
     }
@@ -455,34 +484,10 @@ void PrimitiveProcessor::p_Dictionary(const DictInput* in, vector<uint8_t>* out,
     if (in->OutputType & OT_AGGREGATE)
     {
       // len == 0 indicates this is the first pass
-      if (max.len != 0)
-      {
-        tmp = cs.strnncollsp(sigptr.data, sigptr.len, max.data, max.len);
-
-        if (tmp > 0)
-          max = sigptr;
-      }
-      else
-        max = sigptr;
-
-      if (min.len != 0)
-      {
-        tmp = cs.strnncollsp(sigptr.data, sigptr.len, min.data, min.len);
-
-        if (tmp < 0)
-          min = sigptr;
-      }
-      else
-        min = sigptr;
-
+       max = v>maxByte?sigptr:max;
+       min = v<minByte?sigptr:min;
       aggCount++;
     }
-
-    // filter processing
-    if (in->InputFlags == 1)
-      filterOffset = sizeof(DictInput) + (in->NVALS * sizeof(OldGetSigParams));
-    else
-      filterOffset = sizeof(DictInput) + (in->NVALS * sizeof(PrimToken));
 
     if (eqFilter)
     {
@@ -515,21 +520,19 @@ void PrimitiveProcessor::p_Dictionary(const DictInput* in, vector<uint8_t>* out,
       goto no_store;
     }
 
-    for (filterIndex = 0; filterIndex < in->NOPS; filterIndex++)
+    for (filterIndex = 0; filterIndex < in->NOPS; ++filterIndex)
     {
-      filter = reinterpret_cast<const DictFilterElement*>(&in8[filterOffset]);
-
-      cmpResult = compare(cs, filter->COP, (const char*)sigptr.data, sigptr.len, (const char*)filter->data,
-                          filter->len);
-
+      auto &[wei, COP, str, length] = filterInfo[filterIndex];
+      if (LIKELY(v != wei))
+        cmpResult = weightCompare(COP, v, wei);
+      else
+        cmpResult = compare(cs, COP, (const char*)sigptr.data, sigptr.len, str, length);
       if (!cmpResult && in->BOP != BOP_OR)
         goto no_store;
 
       if (cmpResult && in->BOP != BOP_AND)
         goto store;
-
-      filterOffset += sizeof(DictFilterElement) + filter->len;
-    }
+     }
 
     if (filterIndex == in->NOPS && in->BOP != BOP_OR)
     {

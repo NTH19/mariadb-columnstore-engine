@@ -28,17 +28,14 @@
 int64_t encodeStringPrefix(const uint8_t* str, size_t len, int charsetNumber)
 {
   datatypes::Charset cset(charsetNumber);
-  uint8_t fixedLenPrefix[8];
-  memset(fixedLenPrefix, 0, sizeof(fixedLenPrefix));
-  cset.strnxfrm(fixedLenPrefix, sizeof(fixedLenPrefix), 8, str, len, 0);
-  int64_t acc = 0;
-  size_t i;
-  for (i = 0; i < 8; i++)
-  {
-    uint8_t byte = fixedLenPrefix[i];
-    acc = (acc << 8) + byte;
-  }
-  return acc;
+  int64_t fixedLenPrefix=0;
+  cset.strnxfrm(reinterpret_cast<uint8_t*>(&fixedLenPrefix), 8, 8, str, len, 0);
+  int64_t ret =
+      (fixedLenPrefix >> 56) | ((fixedLenPrefix << 40) & 0x00FF000000000000ULL) |
+      ((fixedLenPrefix << 24) & 0x0000FF0000000000ULL) |((fixedLenPrefix << 8) & 0x000000FF00000000ULL) | 
+      ((fixedLenPrefix >> 8) & 0x00000000FF000000ULL) |((fixedLenPrefix >> 24) & 0x0000000000FF0000ULL) | 
+      ((fixedLenPrefix >> 40) & 0x000000000000FF00ULL) | (fixedLenPrefix << 56);
+  return ret;
 }
 
 int64_t encodeStringPrefix_check_null(const uint8_t* str, size_t len, int charsetNumber)
